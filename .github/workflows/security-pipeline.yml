@@ -217,7 +217,7 @@ jobs:
       # --scanners vuln: Only scan for vulnerabilities (not misconfigs).
       # -------------------------------------------------------------------
       - name: Run Trivy (dependency vulnerability scan)
-        uses: aquasecurity/trivy-action@0.29.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           scan-type: "fs"            # Filesystem mode — scan requirements.txt
           scan-ref: "."              # Scan the current directory
@@ -333,7 +333,7 @@ jobs:
       #   (In some compliance environments you'd still want to see these.)
       # -------------------------------------------------------------------
       - name: Run Trivy (container image scan)
-        uses: aquasecurity/trivy-action@0.29.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: "security-pipeline-demo:${{ github.sha }}"
           severity: "CRITICAL,HIGH"
