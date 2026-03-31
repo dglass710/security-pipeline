@@ -1,0 +1,33 @@
+# =============================================================================
+# requirements.txt — Python dependencies for our Flask app
+# =============================================================================
+# This file tells pip (Python's package manager) what libraries to install.
+# Usage: pip install -r requirements.txt
+#
+# In DevSecOps, dependency scanning (Trivy) reads THIS FILE to check if
+# any of these packages have known vulnerabilities (CVEs).
+# =============================================================================
+
+# Flask: Our web framework. Handles HTTP routing, requests, responses.
+# Version 2.2.0 has known security vulnerabilities — Trivy should catch this.
+# In production you'd use the latest patched version.
+Flask==2.2.0
+
+# Jinja2: Flask's template engine (renders HTML with dynamic data).
+# This older version has known vulnerabilities too.
+Jinja2==3.1.2
+
+# Werkzeug: Flask's underlying WSGI toolkit (handles low-level HTTP stuff).
+# Flask depends on this — listed here with a deliberately old version.
+Werkzeug==2.2.0
+
+# Requests: Popular HTTP client library (for making API calls).
+# Not strictly needed by our app, but included to show that Trivy
+# scans ALL dependencies, not just the ones your code directly uses.
+# This version has a known CVE for improper handling of HTTP redirects.
+requests==2.28.0
+
+# PyYAML: YAML parser. Included because older versions had a critical
+# vulnerability allowing arbitrary code execution via yaml.load().
+# Another target for Trivy to find.
+PyYAML==5.4

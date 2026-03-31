@@ -1,0 +1,38 @@
+# =============================================================================
+# .gitignore — Files that Git should NOT track
+# =============================================================================
+# These files are either generated, contain secrets, or are specific to
+# your local machine. They don't belong in version control.
+# =============================================================================
+
+# Python cache — compiled bytecode files, regenerated automatically
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environment — each developer creates their own
+venv/
+.venv/
+
+# SQLite database — generated at runtime, not part of the source code
+*.db
+
+# Environment variables file — contains secrets!
+# NEVER commit .env files. This is one of the most common security mistakes.
+# TruffleHog would catch it if you did.
+.env
+
+# IDE/editor files — personal preference, not project code
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Distribution/packaging (if you ever build a Python package)
+dist/
+build/
+*.egg-info/

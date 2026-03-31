@@ -1,0 +1,432 @@
+# =============================================================================
+# security-pipeline.yml — Our DevSecOps CI/CD Pipeline
+# =============================================================================
+# This is a GitHub Actions workflow file. When you push code to GitHub,
+# GitHub reads this file and runs all the jobs defined here on their servers.
+#
+# YAML (Yet Another Markup Language) is the config format GitHub Actions uses.
+# Indentation matters in YAML — it uses spaces (not tabs) to define structure.
+#
+# Our pipeline has 6 security stages that run as "jobs":
+#   1. Secret Scanning    (TruffleHog)  — Find leaked credentials
+#   2. SAST               (Semgrep)     — Find code vulnerabilities
+#   3. Dependency Scanning (Trivy)      — Find vulnerable packages
+#   4. Build Docker Image               — Compile our container
+#   5. Container Scanning  (Trivy)      — Scan the built image
+#   6. IaC Scanning        (Checkov)    — Check Dockerfile best practices
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# name: The display name shown in the GitHub Actions UI
+# ---------------------------------------------------------------------------
+name: DevSecOps Security Pipeline
+
+# ---------------------------------------------------------------------------
+# on: WHEN should this pipeline run?
+# ---------------------------------------------------------------------------
+# This triggers on:
+#   - push to main branch (code merged/pushed directly)
+#   - pull_request to main (someone opens a PR targeting main)
+#
+# In a real company, the PR trigger is the important one — it blocks
+# merging vulnerable code. The push trigger catches anything that
+# bypasses the PR process.
+# ---------------------------------------------------------------------------
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+  # workflow_dispatch lets you manually trigger the pipeline from the
+  # GitHub Actions UI. Useful for testing without pushing a commit.
+  workflow_dispatch:
+
+# ---------------------------------------------------------------------------
+# permissions: What access does this workflow have?
+# ---------------------------------------------------------------------------
+# Principle of least privilege — only grant what's needed.
+# 'contents: read' means the workflow can read the repo but NOT push,
+# delete branches, or modify anything. This limits damage if a tool
+# is compromised.
+# ---------------------------------------------------------------------------
+permissions:
+  contents: read
+
+# ---------------------------------------------------------------------------
+# jobs: The actual work the pipeline does
+# ---------------------------------------------------------------------------
+# Each job runs in its own fresh virtual machine (Ubuntu Linux).
+# Jobs run IN PARALLEL by default. We use 'needs' to create dependencies
+# where one job must finish before another starts.
+# ---------------------------------------------------------------------------
+jobs:
+
+  # =========================================================================
+  # JOB 1: SECRET SCANNING — TruffleHog
+  # =========================================================================
+  # TruffleHog scans your code and git history for secrets like:
+  #   - API keys (AWS, GCP, Azure, Stripe, etc.)
+  #   - Passwords and connection strings
+  #   - Private keys and certificates
+  #   - OAuth tokens
+  #
+  # It uses pattern matching (regex) AND entropy analysis (detecting
+  # random-looking strings that are likely keys) to find secrets.
+  #
+  # WHY THIS IS FIRST: If secrets are leaked, nothing else matters.
+  # A leaked AWS key can cost thousands of dollars in minutes.
+  # This should be the fastest gate to fail on.
+  # =========================================================================
+  secret-scan:
+    name: "🔑 Secret Scanning (TruffleHog)"
+    runs-on: ubuntu-latest  # Use GitHub's free Ubuntu runner
+
+    steps:
+      # -------------------------------------------------------------------
+      # Step 1: Check out the repository code
+      # -------------------------------------------------------------------
+      # actions/checkout is a pre-built GitHub Action that clones your repo
+      # into the runner's workspace. Almost every job starts with this.
+      #
+      # fetch-depth: 0 means "clone the FULL git history" (not just the
+      # latest commit). TruffleHog needs this to scan past commits for
+      # secrets that might have been added and then "deleted" — but are
+      # still in the git history and recoverable by anyone.
+      # -------------------------------------------------------------------
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history — TruffleHog scans ALL commits
+
+      # -------------------------------------------------------------------
+      # Step 2: Run TruffleHog
+      # -------------------------------------------------------------------
+      # This uses TruffleHog's official GitHub Action.
+      # 'extra_args' passes command-line flags:
+      #   --only-verified: Only report secrets that TruffleHog has confirmed
+      #     are real (e.g., it actually tried the API key and it worked).
+      #     This dramatically reduces false positives.
+      #     NOTE: We're NOT using --only-verified here so it catches our
+      #     intentional fake secrets too.
+      # -------------------------------------------------------------------
+      - name: Run TruffleHog (secret detection)
+        uses: trufflesecurity/trufflehog@v3.88.26
+        with:
+          extra_args: --results=verified,unverified
+
+  # =========================================================================
+  # JOB 2: SAST — Semgrep (Static Application Security Testing)
+  # =========================================================================
+  # SAST analyzes your SOURCE CODE without running it. Think of it as a
+  # really smart grep that understands code structure, not just text.
+  #
+  # Semgrep uses "rules" — patterns that describe vulnerable code.
+  # Example rule (simplified): "if you see string formatting inside an
+  # SQL query, that's probably SQL injection."
+  #
+  # It checks for:
+  #   - SQL injection
+  #   - Cross-site scripting (XSS)
+  #   - Command injection
+  #   - Server-side template injection (SSTI)
+  #   - Hardcoded secrets
+  #   - Insecure configurations (like debug=True)
+  #   - And hundreds more patterns across 30+ languages
+  #
+  # "p/default" is Semgrep's curated set of high-confidence rules.
+  # =========================================================================
+  sast-scan:
+    name: "🔍 SAST (Semgrep)"
+    runs-on: ubuntu-latest
+
+    # This job needs a Docker container with Semgrep pre-installed.
+    # 'container' tells GitHub Actions to run the steps inside this image
+    # instead of directly on the Ubuntu runner.
+    container:
+      image: semgrep/semgrep  # Official Semgrep Docker image
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # -------------------------------------------------------------------
+      # Run Semgrep with the default ruleset
+      # -------------------------------------------------------------------
+      # 'semgrep scan' is the main command.
+      # --config auto: Uses Semgrep's recommended rules for the languages
+      #   it detects in your repo (Python, JavaScript, etc.)
+      # --error: Makes Semgrep return a non-zero exit code if it finds
+      #   issues. This causes the GitHub Actions job to FAIL, which is
+      #   what makes it a "security gate" — it blocks the pipeline.
+      # --json: Outputs results in JSON format
+      # --output: Saves results to a file (for potential later use)
+      # -------------------------------------------------------------------
+      - name: Run Semgrep (static analysis)
+        run: |
+          echo "=== Running Semgrep SAST scan ==="
+          echo "Scanning for: SQL injection, XSS, SSTI, hardcoded secrets, insecure configs..."
+          semgrep scan --config auto --error --json --output semgrep-results.json .
+        # Note: In a real pipeline you might use 'continue-on-error: true'
+        # and then have a separate step that evaluates the results with
+        # custom severity thresholds (e.g., fail on HIGH but warn on LOW).
+
+  # =========================================================================
+  # JOB 3: DEPENDENCY SCANNING — Trivy (Software Composition Analysis)
+  # =========================================================================
+  # SCA scans your DEPENDENCIES (the packages listed in requirements.txt,
+  # package.json, etc.) against databases of known vulnerabilities (CVEs).
+  #
+  # A CVE (Common Vulnerabilities and Exposures) is a publicly disclosed
+  # security flaw. Example: "CVE-2023-30861: Flask before 2.3.2 allows
+  # cookie theft via response caching."
+  #
+  # Why this matters: ~80% of the code in modern apps comes from
+  # third-party libraries. YOUR code might be perfect, but if you're
+  # using a library with a known exploit, you're still vulnerable.
+  #
+  # Trivy checks your requirements.txt against the National Vulnerability
+  # Database (NVD) and other sources to find these.
+  # =========================================================================
+  dependency-scan:
+    name: "📦 Dependency Scan (Trivy)"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # -------------------------------------------------------------------
+      # Run Trivy in "filesystem" mode
+      # -------------------------------------------------------------------
+      # Trivy has multiple scan modes:
+      #   - 'fs' (filesystem): Scans files like requirements.txt, package.json
+      #   - 'image': Scans Docker images (we use this later in Job 5)
+      #   - 'repo': Scans a remote git repository
+      #
+      # --severity CRITICAL,HIGH: Only report serious vulnerabilities.
+      #   Vulnerability severities (from most to least severe):
+      #     CRITICAL → actively exploited, easy to attack
+      #     HIGH     → serious but may need specific conditions
+      #     MEDIUM   → moderate risk
+      #     LOW      → minor issues
+      #
+      # --exit-code 1: Return failure if vulnerabilities are found.
+      #   This is what makes it a "gate" — the pipeline stops here.
+      #
+      # --scanners vuln: Only scan for vulnerabilities (not misconfigs).
+      # -------------------------------------------------------------------
+      - name: Run Trivy (dependency vulnerability scan)
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          scan-type: "fs"            # Filesystem mode — scan requirements.txt
+          scan-ref: "."              # Scan the current directory
+          severity: "CRITICAL,HIGH"  # Only fail on serious issues
+          exit-code: "1"             # Fail the job if vulns are found
+          scanners: "vuln"           # Focus on vulnerability scanning
+
+  # =========================================================================
+  # JOB 4: BUILD DOCKER IMAGE
+  # =========================================================================
+  # This job builds our Dockerfile into a Docker image. The image is needed
+  # by Job 5 (container scanning) — you can't scan an image that doesn't
+  # exist yet.
+  #
+  # 'needs: [secret-scan, sast-scan, dependency-scan]' means this job
+  # WAITS for all three scanning jobs to complete first. If ANY of them
+  # fail, this job (and everything after it) is skipped.
+  #
+  # This is the "gate" concept: code must pass all security checks
+  # BEFORE we even build it into a deployable artifact.
+  # =========================================================================
+  build:
+    name: "🔨 Build Docker Image"
+    runs-on: ubuntu-latest
+
+    # 'needs' creates a dependency chain. This job won't start until
+    # ALL listed jobs have completed successfully.
+    needs: [secret-scan, sast-scan, dependency-scan]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # -------------------------------------------------------------------
+      # Build the Docker image
+      # -------------------------------------------------------------------
+      # 'docker build' reads the Dockerfile and creates an image.
+      # -t (tag) gives the image a name:version label.
+      # We use the GitHub-provided SHA (unique commit hash) as the version
+      # tag so every build is uniquely identifiable.
+      #
+      # The '.' at the end is the "build context" — the directory Docker
+      # uses as its working directory during the build.
+      # -------------------------------------------------------------------
+      - name: Build Docker image
+        run: |
+          echo "=== Building Docker image ==="
+          echo "This step creates the container image from our Dockerfile."
+          echo "The image will be scanned for OS-level vulnerabilities in the next stage."
+          docker build -t security-pipeline-demo:${{ github.sha }} .
+          echo "=== Build complete ==="
+          docker images security-pipeline-demo
+
+      # -------------------------------------------------------------------
+      # Save the image as a file so the next job can use it
+      # -------------------------------------------------------------------
+      # GitHub Actions jobs run in SEPARATE VMs. The Docker image we just
+      # built only exists in THIS job's VM. To pass it to Job 5, we:
+      #   1. Save it as a .tar file (like a zip for Docker images)
+      #   2. Upload it as an "artifact" (GitHub's way of sharing files
+      #      between jobs)
+      # -------------------------------------------------------------------
+      - name: Save Docker image as artifact
+        run: docker save security-pipeline-demo:${{ github.sha }} -o image.tar
+
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image         # Name to reference when downloading
+          path: image.tar            # The file to upload
+          retention-days: 1          # Auto-delete after 1 day (saves storage)
+
+  # =========================================================================
+  # JOB 5: CONTAINER SCANNING — Trivy (on the Docker image)
+  # =========================================================================
+  # This is DIFFERENT from the dependency scan (Job 3). Here's why:
+  #
+  # Job 3 scans requirements.txt → "are your Python packages vulnerable?"
+  # Job 5 scans the Docker IMAGE → "are the OS packages in your container
+  #   vulnerable?" (things like openssl, libc, curl — installed by the
+  #   base image, not by your requirements.txt)
+  #
+  # Your app might be fine, but if the underlying Debian/Ubuntu has an
+  # unpatched OpenSSL, your container is still exploitable.
+  # =========================================================================
+  container-scan:
+    name: "🐳 Container Scan (Trivy)"
+    runs-on: ubuntu-latest
+    needs: [build]  # Can't scan an image that hasn't been built yet
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Download the image artifact from Job 4
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      # Load the .tar file back into Docker
+      - name: Load Docker image
+        run: docker load -i image.tar
+
+      # -------------------------------------------------------------------
+      # Scan the Docker image with Trivy
+      # -------------------------------------------------------------------
+      # Now we're using Trivy in 'image' mode instead of 'fs' mode.
+      # This scans every package installed in the image's OS layer.
+      #
+      # --ignore-unfixed: Skip vulnerabilities that don't have a fix yet.
+      #   If there's no patch available, flagging it just creates noise.
+      #   (In some compliance environments you'd still want to see these.)
+      # -------------------------------------------------------------------
+      - name: Run Trivy (container image scan)
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          image-ref: "security-pipeline-demo:${{ github.sha }}"
+          severity: "CRITICAL,HIGH"
+          exit-code: "1"
+          ignore-unfixed: true       # Only report fixable vulnerabilities
+          scanners: "vuln"
+
+  # =========================================================================
+  # JOB 6: IaC SCANNING — Checkov (Infrastructure as Code)
+  # =========================================================================
+  # Checkov analyzes infrastructure configuration files for security
+  # misconfigurations. "Infrastructure as Code" (IaC) means defining your
+  # infrastructure in config files instead of clicking through a cloud console.
+  #
+  # Checkov can scan:
+  #   - Dockerfiles (container config)
+  #   - Terraform files (cloud infrastructure)
+  #   - Kubernetes manifests (container orchestration)
+  #   - CloudFormation (AWS infrastructure)
+  #   - And many more
+  #
+  # For our project, it scans the Dockerfile and checks things like:
+  #   - Is the container running as root? (bad)
+  #   - Is there a HEALTHCHECK defined? (should have one)
+  #   - Are we using a pinned base image version? (should be)
+  #   - Are we copying files securely?
+  # =========================================================================
+  iac-scan:
+    name: "🏗️ IaC Scan (Checkov)"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # -------------------------------------------------------------------
+      # Run Checkov on our Dockerfile
+      # -------------------------------------------------------------------
+      # --directory .: Scan the current directory
+      # --framework dockerfile: Only apply Dockerfile-specific rules
+      #   (skip Terraform, Kubernetes, etc. rules since we don't have those files)
+      # --output cli: Print results to the console in human-readable format
+      # --soft-fail: DON'T fail the pipeline on findings
+      #
+      # Why soft-fail? Checkov often flags things that are "best practice
+      # recommendations" rather than actual vulnerabilities. In a real
+      # pipeline, you'd configure specific checks to pass/fail on.
+      # We use soft-fail here so you can SEE the findings without the
+      # entire pipeline failing on non-critical recommendations.
+      # -------------------------------------------------------------------
+      - name: Run Checkov (Dockerfile security scan)
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: .
+          framework: dockerfile
+          output_format: cli
+          soft_fail: true  # Report findings but don't block the pipeline
+
+  # =========================================================================
+  # JOB 7: SECURITY SUMMARY — Collect and display results
+  # =========================================================================
+  # This final job runs after ALL scans complete. It provides a single
+  # place to see the overall pipeline status. In a real pipeline, this
+  # might also:
+  #   - Post results to Slack
+  #   - Create Jira tickets for findings
+  #   - Update a security dashboard
+  #   - Trigger deployment if everything passed
+  # =========================================================================
+  security-summary:
+    name: "📊 Security Summary"
+    runs-on: ubuntu-latest
+    # 'always()' means run this job even if previous jobs failed.
+    # Without this, a failure in any earlier job would skip this one.
+    if: always()
+    needs: [secret-scan, sast-scan, dependency-scan, build, container-scan, iac-scan]
+
+    steps:
+      - name: Security Pipeline Summary
+        run: |
+          echo "============================================="
+          echo "   DevSecOps Security Pipeline - Summary"
+          echo "============================================="
+          echo ""
+          echo "Pipeline Results:"
+          echo "  🔑 Secret Scanning (TruffleHog):  ${{ needs.secret-scan.result }}"
+          echo "  🔍 SAST (Semgrep):                ${{ needs.sast-scan.result }}"
+          echo "  📦 Dependency Scan (Trivy):        ${{ needs.dependency-scan.result }}"
+          echo "  🔨 Docker Build:                   ${{ needs.build.result }}"
+          echo "  🐳 Container Scan (Trivy):         ${{ needs.container-scan.result }}"
+          echo "  🏗️  IaC Scan (Checkov):             ${{ needs.iac-scan.result }}"
+          echo ""
+          echo "============================================="
+          echo "If any gate shows 'failure', the pipeline has"
+          echo "identified security issues that need fixing."
+          echo "============================================="

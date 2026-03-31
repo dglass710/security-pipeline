@@ -1,0 +1,43 @@
+# =============================================================================
+# .dockerignore — Files to EXCLUDE when Docker copies files into the image
+# =============================================================================
+# Works just like .gitignore. When we run "COPY . ." in the Dockerfile,
+# Docker skips everything listed here. This keeps the image small and
+# prevents accidentally including sensitive or unnecessary files.
+# =============================================================================
+
+# Git history — not needed in the container, and can be huge
+.git
+.gitignore
+
+# Python cache files — get regenerated automatically
+__pycache__
+*.pyc
+*.pyo
+
+# Virtual environment — the container installs its own dependencies
+venv/
+.venv/
+
+# IDE/editor config files
+.vscode/
+.idea/
+*.swp
+
+# Docker files — no need to copy Dockerfile into the image it builds
+Dockerfile
+docker-compose.yml
+
+# CI/CD pipeline files — only used by GitHub, not the running app
+.github/
+
+# Documentation
+README.md
+*.md
+
+# SQLite database files — the container creates its own fresh database
+*.db
+
+# Environment files — secrets should come from env vars or secrets manager,
+# not baked into the Docker image (this is a security best practice!)
+.env
