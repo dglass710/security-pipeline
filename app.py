@@ -1,50 +1,63 @@
 # =============================================================================
-# app.py — A small Flask web app (intentionally vulnerable!)
+# app.py — A small Flask web app (REMEDIATED version)
 # =============================================================================
-# This app is PURPOSE-BUILT to have security issues so our scanning tools
-# have real findings to catch. In a real job, you'd NEVER write code like this.
-# Each vulnerability is labeled so you can see what the scanners flag.
+# This is the FIXED version of our intentionally vulnerable app.
+# Every vulnerability that Semgrep flagged has been remediated.
+# Compare this file to the original (in git history) to see what changed.
 #
-# We're building a simple "user notes" API with these endpoints:
+# Endpoints:
 #   GET  /           → Health check (is the app running?)
 #   GET  /notes      → Get all notes
 #   POST /notes      → Create a new note
 #   GET  /notes/<id> → Get a specific note by ID
+#   GET  /search?q=  → Search notes (now safe from SSTI)
 # =============================================================================
 
 import sqlite3  # Built-in Python database — lightweight, no server needed
 import os       # For accessing environment variables and OS-level stuff
 
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify
+# ---------------------------------------------------------------------------
+# FIX: Removed 'render_template_string' from the import.
+# We now use 'render_template' which loads HTML from a file in /templates/,
+# keeping user input out of the template compilation step entirely.
+# (We actually don't even need render_template for our search endpoint
+# anymore — we return JSON instead, which is safer and more consistent
+# with the rest of our API.)
+# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # Create the Flask application instance
 # ---------------------------------------------------------------------------
-# Flask is a "micro web framework" — it handles HTTP requests/responses
-# and routing (mapping URLs to Python functions) with minimal boilerplate.
-# ---------------------------------------------------------------------------
 app = Flask(__name__)
 
 # ===========================================================================
-# 🚨 INTENTIONAL VULNERABILITY #1: Hardcoded Secret
+# FIX #1: Secrets loaded from environment variables (was: hardcoded)
 # ===========================================================================
-# In real apps, secrets (API keys, passwords, database credentials) should
-# NEVER be in source code. They should come from environment variables or
-# a secrets manager (like AWS Secrets Manager or HashiCorp Vault).
+# os.environ.get() reads a value from the operating system's environment.
+# The second argument is a default used ONLY during local development.
 #
-# TruffleHog (our secret scanner) should catch this.
+# In production, these are set via:
+#   - Docker: docker run -e API_SECRET_KEY=real_key ...
+#   - GitHub Actions: stored in repo Settings → Secrets
+#   - Cloud: AWS Secrets Manager, Azure Key Vault, etc.
+#
+# This way, secrets are NEVER in source code or git history.
 # ===========================================================================
-API_SECRET_KEY = "sk-proj-abc123superSecretKey456def789ghi012jkl345"
-DATABASE_PASSWORD = "postgres://admin:password123@localhost:5432/mydb"
+API_SECRET_KEY = os.environ.get("API_SECRET_KEY", "dev-only-placeholder")
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///notes.db")
 
 # ===========================================================================
-# 🚨 INTENTIONAL VULNERABILITY #2: Debug mode enabled
+# FIX #2: Debug mode controlled by environment variable (was: hardcoded True)
 # ===========================================================================
-# Flask's debug mode shows detailed error pages with a Python console.
-# If this runs in production, attackers can execute arbitrary Python code
-# through the debugger. Semgrep (our SAST tool) should catch this.
+# In development: set FLASK_DEBUG=1 in your terminal
+# In production: don't set it (defaults to False)
+#
+# This ensures the interactive debugger is NEVER accidentally exposed.
+# The debugger lets anyone execute arbitrary Python on your server —
+# it's the difference between "website has a bug" and "attacker owns your server."
 # ===========================================================================
-app.config["DEBUG"] = True
+app.config["DEBUG"] = os.environ.get("FLASK_DEBUG", "0") == "1"
 
 
 def get_db():
@@ -147,26 +160,28 @@ def create_note():
     conn = get_db()
 
     # =======================================================================
-    # 🚨 INTENTIONAL VULNERABILITY #3: SQL Injection
+    # FIX #3: Parameterized query (was: string formatting → SQL injection)
     # =======================================================================
-    # This uses Python string formatting to build the SQL query.
-    # An attacker could send a title like:
-    #   '; DROP TABLE notes; --
-    # which would DELETE THE ENTIRE TABLE.
+    # The '?' placeholders tell SQLite: "I'm going to give you the values
+    # separately — treat them as DATA, never as SQL commands."
     #
-    # The SAFE way is parameterized queries (shown commented out below).
-    # Semgrep should catch this SQL injection vulnerability.
+    # Even if an attacker sends a title like: '; DROP TABLE notes; --
+    # SQLite would just store that as a literal string, not execute it.
     #
-    # SAFE version (what you'd use in production):
-    #   cursor = conn.execute(
-    #       "INSERT INTO notes (title, content) VALUES (?, ?)",
-    #       (data["title"], data["content"])
-    #   )
+    # This is called a "parameterized query" or "prepared statement" and
+    # is the #1 defense against SQL injection in ANY language/database.
+    #
+    # BEFORE (vulnerable):
+    #   query = "INSERT ... VALUES ('{}', '{}')".format(data["title"], ...)
+    #   cursor = conn.execute(query)
+    #
+    # AFTER (safe):
+    #   cursor = conn.execute("INSERT ... VALUES (?, ?)", (title, content))
     # =======================================================================
-    query = "INSERT INTO notes (title, content) VALUES ('{}', '{}')".format(
-        data["title"], data["content"]
+    cursor = conn.execute(
+        "INSERT INTO notes (title, content) VALUES (?, ?)",
+        (data["title"], data["content"])
     )
-    cursor = conn.execute(query)
 
     conn.commit()
     note_id = cursor.lastrowid  # Get the auto-generated ID of the new row
@@ -189,7 +204,7 @@ def get_note(note_id):
     conn = get_db()
 
     # The '?' is a parameter placeholder — SQLite safely substitutes the value.
-    # This is the CORRECT way to handle user input in SQL (unlike the INSERT above).
+    # This was already correct in the original version.
     note = conn.execute(
         "SELECT * FROM notes WHERE id = ?", (note_id,)
     ).fetchone()  # fetchone() returns a single row (or None)
@@ -203,17 +218,30 @@ def get_note(note_id):
 
 
 # ===========================================================================
-# 🚨 INTENTIONAL VULNERABILITY #4: Server-Side Template Injection (SSTI)
+# FIX #4: Search returns safe JSON (was: SSTI via render_template_string)
 # ===========================================================================
-# render_template_string() compiles user input as a Jinja2 template.
-# An attacker could send: {{ config.items() }} to dump all app config,
-# or even execute arbitrary Python code on the server.
+# BEFORE (vulnerable):
+#   template = "<h1>Search results for: " + q + "</h1>"
+#   return render_template_string(template)
 #
-# This is one of the most dangerous web vulnerabilities — it gives
-# attackers full Remote Code Execution (RCE). Semgrep should catch this.
+# That was dangerous in TWO ways:
+#   1. SSTI: render_template_string() compiles the string as a Jinja2
+#      template. An attacker sending {{ config }} or {{ ''.__class__ }}
+#      could execute arbitrary Python on the server.
+#   2. XSS: User input concatenated into raw HTML could inject
+#      <script> tags that run in other users' browsers.
 #
-# The SAFE way: use render_template() with a .html FILE, never pass
-# user input directly into a template string.
+# AFTER (safe):
+#   Return a JSON response. jsonify() automatically escapes all values,
+#   making both SSTI and XSS impossible. This is also more consistent
+#   with the rest of our API (all other endpoints return JSON too).
+#
+# If you DID need to render HTML, the safe way is:
+#   1. Create a template FILE: templates/search.html
+#   2. Use render_template("search.html", query=q)
+#   Jinja2 auto-escapes variables in template files, blocking XSS.
+#   And since the template structure is in a file (not a string built
+#   from user input), SSTI is impossible.
 # ===========================================================================
 @app.route("/search")
 def search():
@@ -221,9 +249,22 @@ def search():
     # e.g., /search?q=hello → q = "hello"
     q = request.args.get("q", "")
 
-    # Directly embedding user input into a template = SSTI vulnerability
-    template = "<h1>Search results for: " + q + "</h1>"
-    return render_template_string(template)
+    conn = get_db()
+
+    # Use parameterized query with LIKE for safe searching.
+    # The '%' wildcards mean "match anything before and after the search term."
+    # The '?' placeholder keeps the user input safely separated from SQL.
+    notes = conn.execute(
+        "SELECT * FROM notes WHERE title LIKE ? OR content LIKE ?",
+        (f"%{q}%", f"%{q}%")
+    ).fetchall()
+    conn.close()
+
+    return jsonify({
+        "query": q,
+        "count": len(notes),
+        "results": [dict(note) for note in notes]
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -240,10 +281,10 @@ if __name__ == "__main__":
     init_db()  # Create the database table on first run
 
     # =======================================================================
-    # 🚨 INTENTIONAL VULNERABILITY #5: Debug mode in production
+    # FIX #5: Debug mode reads from environment variable (was: hardcoded True)
     # =======================================================================
-    # debug=True here AGAIN — Semgrep should flag this too.
-    # In production you'd use a proper WSGI server like Gunicorn:
+    # In development: FLASK_DEBUG=1 python app.py
+    # In production: use Gunicorn instead of app.run() entirely:
     #   gunicorn app:app --bind 0.0.0.0:5000
     # =======================================================================
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000)
