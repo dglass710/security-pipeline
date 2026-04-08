@@ -286,5 +286,15 @@ if __name__ == "__main__":
     # In development: FLASK_DEBUG=1 python app.py
     # In production: use Gunicorn instead of app.run() entirely:
     #   gunicorn app:app --bind 0.0.0.0:5000
+    #
+    # NOTE on 0.0.0.0: Semgrep flags this as "exposes the server publicly."
+    # That's technically true, but inside a Docker container, 0.0.0.0 is
+    # REQUIRED — without it, Flask only listens on 127.0.0.1 (localhost
+    # inside the container) and no traffic from outside can reach the app.
+    # Docker's network layer controls what's actually exposed to the host.
+    #
+    # The "nosemgrep" comment below tells Semgrep: "I've reviewed this
+    # finding and it's intentional." This is standard practice for
+    # acknowledged, context-dependent findings in real pipelines.
     # =======================================================================
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=5000)  # nosemgrep: python.flask.security.audit.app-run-param-config.avoid_app_run_with_bad_host
