@@ -1,6 +1,6 @@
 # DevSecOps CI/CD Security Pipeline
 
-A GitHub Actions CI/CD pipeline that integrates automated security scanning at every stage of the development lifecycle. Built with a deliberately vulnerable Flask application to demonstrate how each security tool detects real-world vulnerabilities.
+A GitHub Actions CI/CD pipeline that integrates automated security scanning at every stage of the development lifecycle. Built with a deliberately vulnerable Flask application to demonstrate how each security tool detects real-world vulnerabilities — then remediated to achieve a fully passing pipeline.
 
 ## Pipeline Architecture
 
@@ -44,7 +44,7 @@ Developer pushes code to GitHub
 └──────────────────────────────────────────────────────────────┘
 ```
 
-**Security gates** enforce that code must pass all scans before it can be built into a deployable image. If any scan finds HIGH or CRITICAL issues, the pipeline blocks downstream stages.
+**Security gates** enforce that code must pass all scans before it can be built into a deployable image. If any scan finds HIGH or CRITICAL issues, the pipeline blocks downstream stages — vulnerable code never gets built into a deployable artifact.
 
 ## Security Tools
 
@@ -56,11 +56,13 @@ Developer pushes code to GitHub
 | **Trivy** (image mode) | Container Scanning | Docker image OS-level packages | Scans every package installed in the container's base image for known CVEs |
 | **Checkov** | IaC (Infrastructure as Code) Scanning | Dockerfile for security misconfigurations | Validates configuration against a library of security best-practice checks |
 
-## Intentional Vulnerabilities
+## Vulnerability Findings & Remediation
 
-The Flask application and Dockerfile contain deliberate security issues to demonstrate scanner capabilities:
+The project was built in two phases: first with intentional vulnerabilities to demonstrate scanner detection, then remediated to demonstrate the fix for each finding.
 
-### Application Code (`app.py`)
+### Phase 1: Intentional Vulnerabilities Planted
+
+#### Application Code (`app.py`)
 
 | # | Vulnerability | Description | Scanner |
 |---|--------------|-------------|---------|
@@ -70,7 +72,7 @@ The Flask application and Dockerfile contain deliberate security issues to demon
 | 4 | Cross-Site Scripting (XSS) | User input concatenated into raw HTML strings | Semgrep |
 | 5 | Debug Mode Enabled | Flask debug mode exposes interactive debugger to attackers | Semgrep |
 
-### Infrastructure (`Dockerfile`)
+#### Infrastructure (`Dockerfile`)
 
 | # | Vulnerability | Description | Scanner |
 |---|--------------|-------------|---------|
@@ -78,79 +80,91 @@ The Flask application and Dockerfile contain deliberate security issues to demon
 | 7 | No HEALTHCHECK | Missing health monitoring — Docker can't detect if the app is unresponsive | Checkov |
 | 8 | Outdated Base Image | `python:3.9-slim` contains OS-level packages with known CVEs | Trivy (container scan) |
 
-### Dependencies (`requirements.txt`)
+#### Dependencies (`requirements.txt`)
 
 | # | Vulnerability | Description | Scanner |
 |---|--------------|-------------|---------|
 | 9 | Outdated Packages | Deliberately pinned to old versions of Flask, Werkzeug, Jinja2, requests, and PyYAML with known CVEs | Trivy (dependency scan) |
 
-## Pipeline Results
+### Phase 1 Results: Scanner Findings
 
-### TruffleHog (Secret Detection) — Passed
+**Semgrep (SAST) — 11 Blocking Findings:**
 
-TruffleHog did not flag the hardcoded secrets in `app.py`. The fake credentials did not match its high-confidence detection patterns. In a real scenario with actual API keys (AWS, Stripe, GitHub tokens, etc.), TruffleHog reliably detects them using both regex patterns and entropy analysis.
+| Category | Count | Details |
+|----------|-------|---------|
+| SQL Injection | 4 | Taint tracking followed user input from `request.get_json()` through `.format()` string building to `conn.execute()` |
+| Template Injection / XSS | 3 | User input concatenated into HTML string and passed to `render_template_string()` |
+| Insecure Configuration | 3 | Hardcoded `DEBUG = True`, debug mode in `app.run()`, server bound to `0.0.0.0` with debugger |
+| Dockerfile | 1 | Container running as root with no `USER` directive |
 
-### Semgrep (SAST) — Failed: 11 Findings
+**Trivy SCA — 3 HIGH CVEs:**
 
-Semgrep identified 11 blocking findings across the application code and Dockerfile:
+| CVE | Package | Description |
+|-----|---------|-------------|
+| CVE-2023-30861 | Flask 2.2.0 | Session cookie disclosure via response caching — attacker can hijack user sessions |
+| CVE-2023-25577 | Werkzeug 2.2.0 | High resource usage parsing multipart form data — Denial of Service |
+| CVE-2024-34069 | Werkzeug 2.2.0 | Code execution through the debugger — Remote Code Execution |
 
-**SQL Injection (4 findings)**
-- `app.py:166-168` — User input from `request.get_json()` flows into a SQL query built with `.format()`. Multiple rules detected the tainted data flow from request to database execution.
-- `app.py:169` — Execution of a dynamically constructed query variable.
-
-**Template Injection & XSS (3 findings)**
-- `app.py:225` — User input from `request.args.get()` concatenated directly into an HTML string (XSS).
-- `app.py:226` — Tainted template string passed to `render_template_string()` (SSTI — enables remote code execution).
-
-**Insecure Configuration (3 findings)**
-- `app.py:47` — Hardcoded `DEBUG = True` in Flask config.
-- `app.py:249` — `debug=True` in `app.run()` exposes the Werkzeug debugger.
-- `app.py:249` — `host="0.0.0.0"` exposes the debug server on all network interfaces.
-
-**Dockerfile (1 finding)**
-- `Dockerfile:101` — No `USER` directive; container runs as root.
-
-### Trivy Dependency Scan (SCA) — Failed: 3 HIGH CVEs
-
-| CVE | Package | Severity | Description | Fixed In |
-|-----|---------|----------|-------------|----------|
-| CVE-2023-30861 | Flask 2.2.0 | HIGH | Session cookie disclosure via response caching — attacker can hijack user sessions | 2.2.5, 2.3.2 |
-| CVE-2023-25577 | Werkzeug 2.2.0 | HIGH | High resource usage when parsing multipart form data — Denial of Service | 2.2.3 |
-| CVE-2024-34069 | Werkzeug 2.2.0 | HIGH | Code execution through the debugger — Remote Code Execution on developer machines | 3.0.3 |
-
-### Trivy Container Scan — Skipped
-
-The Docker image build was **gated behind** the SAST and dependency scans. Because both failed, the build was skipped — demonstrating the security gate working as intended. Vulnerable code never gets built into a deployable artifact.
-
-### Checkov (IaC Scan) — 23 Passed, 2 Failed (Soft-Fail)
-
-**Failed Checks:**
+**Checkov (IaC) — 2 Failed Checks:**
 
 | Check ID | Description |
 |----------|-------------|
 | CKV_DOCKER_2 | No `HEALTHCHECK` instruction defined |
 | CKV_DOCKER_3 | No non-root `USER` created for the container |
 
-**Notable Passing Checks:**
+**Pipeline gate in action:** The Docker image build was blocked because SAST and dependency scans failed upstream. The container scan was also skipped. This demonstrates the security gate working as designed.
 
-| Check ID | What It Verified |
-|----------|-----------------|
-| CKV_DOCKER_1 | Port 22 (SSH) is not exposed |
-| CKV_DOCKER_7 | Base image uses a pinned version tag (not `latest`) |
-| CKV_DOCKER_10 | WORKDIR uses an absolute path |
-| CKV2_DOCKER_1 | `sudo` is not used in the Dockerfile |
-| CKV2_DOCKER_2-6, 12-16 | Certificate validation is not disabled for any package manager or tool |
+### Phase 2: Remediation
 
-Checkov runs in soft-fail mode — it reports findings without blocking the pipeline, since many IaC checks are best-practice recommendations rather than confirmed vulnerabilities.
+Every finding was fixed with industry-standard practices:
+
+| Vulnerability | Fix Applied | Security Principle |
+|--------------|-------------|-------------------|
+| Hardcoded secrets | Replaced with `os.environ.get()` to load from environment variables | Separation of config from code |
+| SQL injection | Replaced `.format()` with parameterized queries (`?` placeholders) | Parameterized queries — the #1 SQL injection defense |
+| SSTI / XSS | Replaced `render_template_string()` with safe `jsonify()` responses | Never mix user input with template compilation |
+| Debug mode | Moved to environment variable, defaults to off | Secure by default |
+| Running as root | Added `useradd` and `USER appuser` directive | Principle of least privilege |
+| No HEALTHCHECK | Added HEALTHCHECK using Python `urllib` | Enable automated health monitoring and recovery |
+| Outdated base image | Updated `python:3.9-slim` → `python:3.12-slim` | Minimize known vulnerabilities in OS packages |
+| Outdated dependencies | Updated all packages to latest stable versions | Patch known CVEs |
+| `0.0.0.0` host binding | Added `nosemgrep` inline suppression with justification comment | Informed risk acceptance — required for Docker networking |
+
+### Phase 2 Results: All Gates Passing
+
+```
+✅ Secret Scanning (TruffleHog)    — no leaked credentials
+✅ SAST (Semgrep)                  — 0 findings (down from 11)
+✅ Dependency Scan (Trivy)         — no known CVEs in packages
+✅ Build Docker Image              — built successfully
+✅ Container Scan (Trivy)          — no HIGH/CRITICAL CVEs in image
+✅ IaC Scan (Checkov)              — all checks passing
+✅ Security Summary                — all gates passed
+```
+
+## Git History
+
+The commit history tells the full story of the project lifecycle:
+
+```
+7ec6ee7  Suppress Semgrep false positive for 0.0.0.0 host binding
+c15d8de  Fix Dockerfile: add non-root user and HEALTHCHECK
+170e905  Fix dependency vulnerabilities: update all packages to latest versions
+a114f54  Fix SAST findings: SQL injection, SSTI, debug mode, hardcoded secrets
+b6582e1  Add README documenting pipeline architecture and security findings
+f86ab9c  Show Semgrep findings in plain text in Actions log
+5096e0c  Fix Trivy action version to 0.35.0
+5b142a0  Initial commit: Flask app with DevSecOps security pipeline
+```
 
 ## Project Structure
 
 ```
 ├── .github/workflows/
 │   └── security-pipeline.yml   # CI/CD pipeline with 6 security stages
-├── app.py                      # Flask REST API (intentionally vulnerable)
-├── Dockerfile                  # Container definition (intentionally misconfigured)
-├── requirements.txt            # Python dependencies (intentionally outdated)
+├── app.py                      # Flask REST API (remediated)
+├── Dockerfile                  # Container definition (hardened)
+├── requirements.txt            # Python dependencies (patched)
 ├── .dockerignore               # Files excluded from Docker builds
 ├── .gitignore                  # Files excluded from version control
 └── README.md                   # This file
@@ -168,9 +182,11 @@ Checkov runs in soft-fail mode — it reports findings without blocking the pipe
 
 ## What I Learned
 
-- How to integrate security scanning tools into a CI/CD pipeline as automated gates
-- The difference between SAST (analyzing source code patterns) and SCA (checking dependencies against CVE databases)
-- How Semgrep uses abstract syntax trees and taint tracking to trace user input from HTTP requests to dangerous operations like SQL queries
-- Why container scanning is a separate concern from dependency scanning — your app's packages may be clean while the base OS image has vulnerabilities
+- How to integrate security scanning tools into a CI/CD pipeline as automated gates that block vulnerable code from being deployed
+- The difference between SAST (analyzing source code patterns via AST parsing and taint tracking) and SCA (checking dependency versions against CVE databases)
+- How Semgrep traces untrusted user input from HTTP request sources through data transformations to dangerous sinks like SQL queries — across multiple lines of code
+- Why container scanning and dependency scanning are separate concerns — your application packages may be clean while the base OS image has vulnerable system libraries
 - How IaC scanning catches infrastructure misconfigurations like running containers as root or missing health checks
-- The principle of defense in depth — multiple overlapping tools catch different categories of vulnerability, and some issues (like running as root) get flagged by more than one scanner
+- The principle of defense in depth — multiple overlapping scanners catch different vulnerability categories, and some issues (like running as root) get flagged by more than one tool
+- How to triage scanner findings — distinguishing real vulnerabilities from context-dependent false positives and documenting suppression decisions with inline comments
+- How security gates use job dependencies (`needs`) in GitHub Actions to enforce a build order where vulnerable code never reaches the Docker image build stage
