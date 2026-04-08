@@ -1,25 +1,34 @@
 # =============================================================================
 # Dockerfile — Instructions for building our app into a Docker container
+#                              (REMEDIATED version)
 # =============================================================================
 # A Dockerfile is like a recipe. Docker reads it top-to-bottom and builds
 # an "image" — a portable, self-contained package with our app + all its
 # dependencies. You can then run that image anywhere Docker is installed.
 #
-# Our security tools will scan this file in two ways:
+# Our security tools scan this file in two ways:
 #   1. Checkov (IaC scanner): checks if the Dockerfile follows best practices
 #   2. Trivy (container scanner): scans the BUILT image for OS-level vulns
+#
+# Changes from the vulnerable version:
+#   - Updated base image from python:3.9-slim to python:3.12-slim
+#   - Added a non-root user (FIX for Checkov CKV_DOCKER_3)
+#   - Added a HEALTHCHECK (FIX for Checkov CKV_DOCKER_2)
 # =============================================================================
 
 # ---------------------------------------------------------------------------
-# 🚨 INTENTIONAL VULNERABILITY #6: Using an old, bloated base image
+# FIX #6: Updated base image (was: python:3.9-slim)
 # ---------------------------------------------------------------------------
-# "python:3.9-slim" is a Debian-based image with just enough to run Python.
-# But we're pinning an old version. Trivy will find CVEs in the OS packages.
+# python:3.12-slim uses a newer Debian with more recent OS packages,
+# which means fewer known CVEs for Trivy to find during container scanning.
 #
-# Best practice: use the latest patched version, or even better, use
-# "python:3.12-alpine" (Alpine Linux is much smaller = fewer vulnerabilities).
+# Why "slim" and not "alpine"?
+#   - Alpine uses musl libc instead of glibc, which can cause subtle
+#     compatibility issues with some Python packages.
+#   - "slim" is Debian-based but stripped down — a good middle ground
+#     between compatibility and image size.
 # ---------------------------------------------------------------------------
-FROM python:3.9-slim
+FROM python:3.12-slim
 
 # ---------------------------------------------------------------------------
 # Set the working directory inside the container
@@ -66,30 +75,50 @@ COPY . .
 EXPOSE 5000
 
 # ---------------------------------------------------------------------------
-# 🚨 INTENTIONAL VULNERABILITY #7: Running as root
+# FIX #7: Create and switch to a non-root user (was: running as root)
 # ---------------------------------------------------------------------------
-# By default, Docker runs everything as the root user. If an attacker
-# exploits our app, they'd have ROOT ACCESS inside the container.
+# By default, Docker runs everything as root. If an attacker exploits the
+# app, they'd have root privileges inside the container.
 #
-# Checkov should flag this. The fix is to create a non-root user:
-#   RUN useradd --create-home appuser
-#   USER appuser
+# 'useradd' creates a new Linux user called "appuser".
+#   --create-home: gives them a home directory (some apps need this)
+#   --shell /bin/bash: sets their default shell
 #
-# We're intentionally NOT doing that so Checkov has something to find.
+# 'USER appuser' tells Docker: "from this point on, run everything as
+# appuser, not root." This applies to the CMD below AND to anyone who
+# later runs 'docker exec' into the container.
+#
+# This is the principle of LEAST PRIVILEGE — give processes only the
+# minimum permissions they need. A web app doesn't need root access.
 # ---------------------------------------------------------------------------
+RUN useradd --create-home --shell /bin/bash appuser
+USER appuser
 
 # ---------------------------------------------------------------------------
-# 🚨 INTENTIONAL VULNERABILITY #8: No HEALTHCHECK defined
+# FIX #8: Add a HEALTHCHECK (was: missing entirely)
 # ---------------------------------------------------------------------------
-# A HEALTHCHECK tells Docker how to verify the container is working.
-# Without it, Docker assumes the container is healthy as long as the
-# process is running — even if the app is deadlocked or returning errors.
+# HEALTHCHECK tells Docker how to verify the container is actually working.
 #
-# Checkov should flag this missing best practice.
-# Good HEALTHCHECK example:
-#   HEALTHCHECK --interval=30s --timeout=3s \
-#     CMD curl -f http://localhost:5000/ || exit 1
+# How it works:
+#   --interval=30s : Check every 30 seconds
+#   --timeout=3s   : If the check takes longer than 3 seconds, count it as failed
+#   --start-period=5s : Wait 5 seconds after container start before first check
+#                       (gives the app time to boot up)
+#   --retries=3    : Mark as "unhealthy" after 3 consecutive failures
+#
+# The CMD part is the actual check:
+#   python -c "import urllib.request; urllib.request.urlopen('http://localhost:5000/')"
+#
+# We use Python's built-in urllib instead of curl because:
+#   - curl isn't installed in the slim image (we'd have to add it)
+#   - Python is already available (it's a Python image!)
+#   - Fewer installed tools = smaller attack surface
+#
+# If the health check fails, container orchestrators (Docker Compose,
+# Kubernetes, ECS) can automatically restart the container.
 # ---------------------------------------------------------------------------
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:5000/')" || exit 1
 
 # ---------------------------------------------------------------------------
 # The command to run when the container starts
