@@ -1,33 +1,38 @@
 # =============================================================================
-# requirements.txt — Python dependencies for our Flask app
+# requirements.txt — Python dependencies for our Flask app (REMEDIATED)
 # =============================================================================
 # This file tells pip (Python's package manager) what libraries to install.
 # Usage: pip install -r requirements.txt
 #
 # In DevSecOps, dependency scanning (Trivy) reads THIS FILE to check if
 # any of these packages have known vulnerabilities (CVEs).
+#
+# ALL packages have been updated to their latest stable versions to
+# resolve the 3 HIGH CVEs that Trivy found:
+#   - CVE-2023-30861 (Flask) — session cookie disclosure
+#   - CVE-2023-25577 (Werkzeug) — DoS via multipart parsing
+#   - CVE-2024-34069 (Werkzeug) — code execution via debugger
 # =============================================================================
 
 # Flask: Our web framework. Handles HTTP routing, requests, responses.
-# Version 2.2.0 has known security vulnerabilities — Trivy should catch this.
-# In production you'd use the latest patched version.
-Flask==2.2.0
+# BEFORE: 2.2.0 (had CVE-2023-30861 — session cookie disclosure via caching)
+# AFTER:  3.1.3 (all known CVEs patched)
+Flask==3.1.3
 
 # Jinja2: Flask's template engine (renders HTML with dynamic data).
-# This older version has known vulnerabilities too.
-Jinja2==3.1.2
+# Updated to latest — stays compatible with Flask 3.x.
+Jinja2==3.1.6
 
 # Werkzeug: Flask's underlying WSGI toolkit (handles low-level HTTP stuff).
-# Flask depends on this — listed here with a deliberately old version.
-Werkzeug==2.2.0
+# BEFORE: 2.2.0 (had CVE-2023-25577 and CVE-2024-34069 — DoS and RCE)
+# AFTER:  3.1.8 (all known CVEs patched)
+Werkzeug==3.1.8
 
 # Requests: Popular HTTP client library (for making API calls).
-# Not strictly needed by our app, but included to show that Trivy
-# scans ALL dependencies, not just the ones your code directly uses.
-# This version has a known CVE for improper handling of HTTP redirects.
-requests==2.28.0
+# Updated to latest stable version.
+requests==2.33.1
 
-# PyYAML: YAML parser. Included because older versions had a critical
-# vulnerability allowing arbitrary code execution via yaml.load().
-# Another target for Trivy to find.
-PyYAML==5.4
+# PyYAML: YAML parser.
+# BEFORE: 5.4 (older versions had arbitrary code execution via yaml.load())
+# AFTER:  6.0.3 (safe — also enforces yaml.safe_load() by default)
+PyYAML==6.0.3
